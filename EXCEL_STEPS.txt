@@ -1,0 +1,156 @@
+Q3 - BUILDING THE EXCEL WORKBOOK WITH A SUBMIT BUTTON
+=====================================================
+
+The Python side is done. These are the steps I can't do for you, the Excel part.
+
+Mac users, read this first. The macro uses MSXML2.ServerXMLHTTP, which is a
+Windows COM component. It does not exist in Excel for Mac and there is no drop-in
+replacement, so the Submit button will not work there. Build and test this workbook on
+Excel for Windows (a college PC or a Windows VM). The Python API itself runs fine on
+a Mac, it's only the workbook that needs Windows.
+
+Step 0 - Train the model first
+------------------------------
+
+Nothing below works until model.pkl exists.
+
+cd final-exam
+pip install -r requirements.txt
+python train_model.py
+
+That writes two files into this folder:
+
+- model.pkl - the trained Random Forest plus the feature order
+- test_predictions.xlsx - the 10 test customers with a Prob_Default column
+
+It also prints a hold-out AUC, so you can see the model is sensible before going further.
+
+Step 1 - Start the API
+----------------------
+
+In a terminal, from the final-exam folder:
+
+uvicorn main:app --reload
+
+Leave this running. Check it works by opening http://127.0.0.1:8000/docs, expanding
+POST /predict, clicking Try it out, and sending this:
+
+{
+  "AGE": 3,
+  "EMPLOY": 16,
+  "ADDRESS": 10,
+  "DEBTINC": 9.1,
+  "CREDDEBT": 11.3,
+  "OTHDEBT": 5.01
+}
+
+You should get back something like {"probability_of_default": 0.8}. If that works, the
+API is fine and anything that goes wrong later is on the Excel side.
+
+Step 2 - Open test_predictions.xlsx and save it as .xlsm
+--------------------------------------------------------
+
+1. Open test_predictions.xlsx. It has the 10 test customers and their predicted
+   probabilities, which covers the "display the predicted probability in the worksheet"
+   part of the question.
+2. File then Save As, and set the type to
+   Excel Macro-Enabled Workbook (*.xlsm). Call it loan_default.xlsm.
+
+   This matters: saving as a plain .xlsx throws the macro away without warning.
+
+Step 3 - Add an Input sheet
+---------------------------
+
+1. Right-click the sheet tab at the bottom, choose Insert, then Worksheet.
+2. Rename it exactly Input (the macro looks for that name, and it's case sensitive).
+3. Lay it out like this. The feature names in column A must be spelled exactly as below,
+   because they're sent to the API as JSON keys, and they must be in this order, which is
+   the order train_model.py saved in model.pkl:
+
+           A          B
+   **1**   Feature    Value
+   **2**   AGE        3
+   **3**   EMPLOY     16
+   **4**   ADDRESS    10
+   **5**   DEBTINC    9.1
+   **6**   CREDDEBT   11.3
+   **7**   OTHDEBT    5.01
+
+   Those sample values are the first row of the test set, so you can check the answer
+   against Prob_Default in the other sheet.
+
+   Leave columns C and D empty. The macro writes the result into E2 and E3.
+
+Step 4 - Import the macro
+-------------------------
+
+1. Press Alt+F11 to open the VBA editor.
+2. File then Import File..., and pick PredictDefault.bas from this folder.
+   (Or Insert then Module and paste the contents in by hand.)
+3. You should see PredictDefault appear under Modules in the left panel.
+4. Close the editor with Alt+Q.
+
+Step 5 - Add the Submit button
+------------------------------
+
+1. If you can't see the Developer tab: File then Options then
+   Customize Ribbon, and tick Developer on the right.
+2. Go to the Input sheet (the button should live next to the inputs).
+3. Developer then Insert, and under Form Controls choose the Button (the
+   first icon). Drag a rectangle somewhere around cell D5.
+4. The Assign Macro box opens as soon as you let go. Pick PredictDefault and click
+   OK.
+5. Right-click the button, Edit Text, and type Submit. Click a cell to finish.
+
+Step 6 - Test it end to end
+---------------------------
+
+1. Make sure the API is still running from Step 1.
+2. On the Input sheet, click Submit.
+3. You should get a message box with the predicted probability, and the same number
+   formatted as a percentage in E3, under a "Probability of Default" label in E2.
+4. Compare it against the Prob_Default value for row 1 in the test_predictions sheet.
+   They should match, since it's the same model and the same inputs.
+5. Change some values (push DEBTINC up to 40, say) and click Submit again. The
+   probability should move. If it never changes, the macro isn't actually reading the
+   sheet.
+
+Step 7 - Check the error handling
+---------------------------------
+
+Worth doing, because it shows the thing degrades gracefully rather than throwing a VBA
+runtime error at the user.
+
+1. Stop the API (Ctrl+C in the terminal).
+2. Click Submit.
+3. You should get a friendly message telling you to start the API with
+   uvicorn main:app --reload, not a crash.
+4. Restart the API and confirm it works again.
+
+Pointing it at a deployed API
+-----------------------------
+
+To use a hosted version instead of the local one, change the single line near the top of
+the macro:
+
+Const API_URL As String = "https://your-app.onrender.com/predict"
+
+Two things to watch if you do that. The model file has to be committed to the repo so the
+server can load it, and on a free tier the first click after an idle period can take about
+50 seconds while the instance wakes up, so the button will look frozen.
+
+Troubleshooting
+---------------
+
+- "Subscript out of range" - the sheet isn't named exactly Input.
+- The button does nothing - the file was saved as .xlsx, so the macro was dropped.
+  Save as .xlsm and redo Steps 4 and 5.
+- "Macros have been disabled" - click Enable Content. If the file was downloaded,
+  right-click it in Explorer, Properties, tick Unblock, and reopen.
+- API returns status 422 - a field name in column A is misspelled, or a value is blank
+  or has text in it. The feature names are case sensitive.
+- "Could not reach the API" - the API isn't running, or it's on a different port.
+  Check the terminal from Step 1 and that API_URL matches.
+- Decimals coming through wrong - if Windows is set to a comma decimal separator, the
+  macro already swaps commas for dots when building the JSON, but check that B5 really
+  holds 9.1 and not the text "9,1".
